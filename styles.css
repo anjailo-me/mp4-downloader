@@ -106,7 +106,16 @@ h2 {
   font-weight: 400;
 }
 
-input {
+.split {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.split .field + .field { margin-top: 0; }
+
+input, select {
   width: 100%;
   height: 52px;
   border: 1px solid var(--border);
@@ -118,7 +127,16 @@ input {
   outline: none;
 }
 
-input:focus {
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 20px) 22px, calc(100% - 14px) 22px;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+}
+
+input:focus, select:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px #b57ae033;
 }
@@ -285,4 +303,5 @@ button {
   .shell { padding-top: 22px; }
   .top { align-items: flex-start; flex-direction: column; }
   .primary { width: 100%; }
+  .split { grid-template-columns: 1fr; }
 }

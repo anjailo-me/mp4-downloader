@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MP4 Downloader</title>
-  <meta name="description" content="Paste a direct MP4 link and save it to your Downloads folder." />
+  <title>YouTube to MP4</title>
+  <meta name="description" content="Paste a YouTube link and save it as an MP4." />
   <meta name="theme-color" content="#1a1024" />
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -17,26 +17,38 @@
   <main class="shell">
     <header class="top">
       <div>
-        <p class="eyebrow">Direct file saver</p>
-        <h1>MP4 Downloader</h1>
+        <p class="eyebrow">YouTube → MP4</p>
+        <h1>YouTube Downloader</h1>
       </div>
       <button type="button" class="ghost" id="open-folder">Open folder</button>
     </header>
 
     <form class="card" id="form" autocomplete="off">
       <label class="field">
-        <span>Video URL</span>
+        <span>YouTube link</span>
         <input id="url" name="url" type="url" inputmode="url" spellcheck="false"
-          placeholder="https://example.com/clip.mp4" required />
+          placeholder="https://www.youtube.com/watch?v=…" required />
       </label>
-      <label class="field">
-        <span>Save as <em>(optional)</em></span>
-        <input id="filename" name="filename" type="text" spellcheck="false"
-          placeholder="my-video.mp4" maxlength="160" />
-      </label>
-      <p class="hint">Works with a direct <code>.mp4</code> link, not YouTube or streaming pages.</p>
+      <div class="split">
+        <label class="field">
+          <span>Quality</span>
+          <select id="quality" name="quality">
+            <option value="best" selected>Best available</option>
+            <option value="1080">1080p</option>
+            <option value="720">720p</option>
+            <option value="480">480p</option>
+            <option value="360">360p</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Save as <em>(optional)</em></span>
+          <input id="filename" name="filename" type="text" spellcheck="false"
+            placeholder="Uses the video title" maxlength="160" />
+        </label>
+      </div>
+      <p class="hint">Paste a YouTube, Shorts, or youtu.be link. Saved as <code>.mp4</code>.</p>
       <div class="actions">
-        <button type="submit" class="primary" id="download-btn">Download</button>
+        <button type="submit" class="primary" id="download-btn">Download MP4</button>
         <p class="folder" id="folder-label">Saves to Downloads\MP4 Downloader</p>
       </div>
       <p class="banner" id="banner" hidden></p>
@@ -48,7 +60,7 @@
         <span id="count-pill">None yet</span>
       </div>
       <ul id="jobs" class="jobs">
-        <li class="empty">Paste a link and hit download.</li>
+        <li class="empty">Paste a YouTube link and hit download.</li>
       </ul>
     </section>
   </main>

@@ -1,6 +1,7 @@
 const form = document.getElementById("form");
 const urlInput = document.getElementById("url");
 const filenameInput = document.getElementById("filename");
+const qualityInput = document.getElementById("quality");
 const downloadBtn = document.getElementById("download-btn");
 const banner = document.getElementById("banner");
 const jobsEl = document.getElementById("jobs");
@@ -9,6 +10,16 @@ const folderLabel = document.getElementById("folder-label");
 const openFolderBtn = document.getElementById("open-folder");
 
 let pollTimer = 0;
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
+}
 
 function showBanner(message) {
   banner.hidden = !message;
@@ -42,7 +53,7 @@ function statusLabel(job) {
 
 function render(jobs) {
   if (!jobs.length) {
-    jobsEl.innerHTML = `<li class="empty">Paste a link and hit download.</li>`;
+    jobsEl.innerHTML = `<li class="empty">Paste a YouTube link and hit download.</li>`;
     countPill.textContent = "None yet";
     return;
   }
@@ -57,17 +68,18 @@ function render(jobs) {
       : bytes(job.received);
     const actions = [];
     if (job.status === "running" || job.status === "queued") {
-      actions.push(`<button class="linkish" data-cancel="${job.id}" type="button">Cancel</button>`);
+      actions.push(`<button class="linkish" data-cancel="${esc(job.id)}" type="button">Cancel</button>`);
     }
     if (job.status === "done") {
-      actions.push(`<button class="linkish" data-open="${job.path}" type="button">Open file</button>`);
+      actions.push(`<button class="linkish" data-open="${esc(job.path)}" type="button">Open file</button>`);
     }
-    const error = job.error ? `<p class="meta">${job.error}</p>` : "";
+    const error = job.error ? `<p class="meta">${esc(job.error)}</p>` : "";
+    const label = esc(job.title || job.filename);
     return `
       <li class="job">
         <div class="job-row">
-          <span class="name" title="${job.filename}">${job.filename}</span>
-          <span class="status ${job.status}">${statusLabel(job)}</span>
+          <span class="name" title="${label}">${label}</span>
+          <span class="status ${esc(job.status)}">${statusLabel(job)}</span>
         </div>
         <div class="bar" aria-hidden="true"><div class="fill" style="width:${pct}%"></div></div>
         <div class="job-row">
@@ -113,6 +125,7 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify({
         url: urlInput.value.trim(),
         filename: filenameInput.value.trim(),
+        quality: qualityInput.value,
       }),
     });
     filenameInput.value = "";

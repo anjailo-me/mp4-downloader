@@ -1,33 +1,62 @@
 #!/usr/bin/env python3
-"""Local MP4 downloader: serves the UI and streams direct .mp4 URLs to disk."""
+"""Local YouTube → MP4 downloader."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
 
 HOST = "127.0.0.1"
 PORT = 8791
-CHUNK = 256 * 1024
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
 ROOT = Path(__file__).resolve().parent
 DOWNLOAD_DIR = Path.home() / "Downloads" / "MP4 Downloader"
 JOBS: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 MAX_HISTORY = 40
+QUALITIES = {"best", "1080", "720", "480", "360"}
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+}
+
+FFMPEG_PATH: str | None = None
+
+
+def ensure_deps() -> None:
+    try:
+        import imageio_ffmpeg  # noqa: F401
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        req = ROOT / "requirements.txt"
+        print("Installing yt-dlp…", flush=True)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(req)])
+
+
+def ffmpeg_path() -> str:
+    global FFMPEG_PATH
+    if FFMPEG_PATH:
+        return FFMPEG_PATH
+    import imageio_ffmpeg
+
+    print("Preparing ffmpeg (first run may take a minute)…", flush=True)
+    FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+    return FFMPEG_PATH
 
 
 def send_json(handler: SimpleHTTPRequestHandler, payload: Any, status: int = 200) -> None:
@@ -57,6 +86,8 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "id": job["id"],
         "url": job["url"],
         "filename": job["filename"],
+        "title": job.get("title") or job["filename"],
+        "quality": job.get("quality") or "best",
         "status": job["status"],
         "received": job["received"],
         "total": job["total"],
@@ -82,21 +113,6 @@ def safe_filename(name: str) -> str:
     return name
 
 
-def filename_from_url(url: str) -> str:
-    path = unquote(urlparse(url).path)
-    candidate = path.rsplit("/", 1)[-1] if path else ""
-    return safe_filename(candidate or "video.mp4")
-
-
-def filename_from_disposition(header: str | None) -> str | None:
-    if not header:
-        return None
-    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', header, re.I)
-    if not match:
-        return None
-    return safe_filename(match.group(1).strip())
-
-
 def unique_path(folder: Path, filename: str) -> Path:
     dest = folder / filename
     if not dest.exists():
@@ -110,38 +126,35 @@ def unique_path(folder: Path, filename: str) -> Path:
     return folder / f"{stem}-{uuid.uuid4().hex[:8]}{suffix}"
 
 
+def is_youtube(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in YOUTUBE_HOSTS
+
+
 def validate_url(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        return "Use an http or https link."
-    if not parsed.netloc:
-        return "That URL is missing a host."
-    host = parsed.hostname or ""
-    if host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
-        return "Local URLs are not allowed."
+        return "Use an http or https YouTube link."
+    if not is_youtube(url):
+        return "Paste a YouTube link (youtube.com or youtu.be)."
     return None
 
 
-def looks_like_html(content_type: str, peek: bytes) -> bool:
-    ctype = content_type.lower()
-    if "text/html" in ctype or "application/xhtml" in ctype:
-        return True
-    head = peek.lstrip()[:64].lower()
-    return head.startswith(b"<!doctype html") or head.startswith(b"<html")
-
-
-def looks_like_mp4(peek: bytes) -> bool:
-    return len(peek) >= 8 and peek[4:8] == b"ftyp"
-
-
-def is_video_type(content_type: str, url: str) -> bool:
-    ctype = (content_type or "").split(";")[0].strip().lower()
-    if ctype in {"video/mp4", "video/quicktime", "application/mp4", "application/octet-stream"}:
-        return True
-    if ctype.startswith("video/"):
-        return True
-    path = urlparse(url).path.lower()
-    return path.endswith(".mp4") or path.endswith(".m4v") or path.endswith(".mov")
+def format_selector(quality: str) -> str:
+    mp4 = "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]"
+    fallback = "bv*+ba/b"
+    heights = {"1080": 1080, "720": 720, "480": 480, "360": 360}
+    height = heights.get(quality)
+    if not height:
+        return f"{mp4}/{fallback}"
+    cap = f"[height<={height}]"
+    return (
+        f"bv*{cap}[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/"
+        f"bv*{cap}[ext=mp4]+ba[ext=m4a]/"
+        f"b{cap}[ext=mp4]/"
+        f"bv*{cap}+ba/"
+        f"b{cap}"
+    )
 
 
 def update_job(job_id: str, **fields: Any) -> None:
@@ -152,119 +165,163 @@ def update_job(job_id: str, **fields: Any) -> None:
         job.update(fields)
 
 
+def cleanup_sidecars(dest: Path) -> None:
+    stem = dest.stem
+    for path in dest.parent.glob(f"{stem}*"):
+        name = path.name.lower()
+        if path == dest:
+            continue
+        if name.endswith((".part", ".ytdl", ".tmp")) or ".f" in path.stem:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def run_download(job_id: str) -> None:
+    import yt_dlp
+    from yt_dlp.utils import DownloadCancelled, DownloadError
+
     with JOBS_LOCK:
         job = JOBS[job_id]
         url = job["url"]
         cancel = job["cancel"]
         dest = Path(job["path"])
-        part = dest.with_suffix(dest.suffix + ".part")
+        quality = job.get("quality") or "best"
 
     update_job(job_id, status="running", started_at=time.time())
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+    class Cancelled(DownloadCancelled):
+        pass
+
+    def hook(event: dict[str, Any]) -> None:
+        if cancel.is_set():
+            raise Cancelled("cancelled")
+        status = event.get("status")
+        if status == "downloading":
+            total = event.get("total_bytes") or event.get("total_bytes_estimate") or 0
+            update_job(
+                job_id,
+                received=int(event.get("downloaded_bytes") or 0),
+                total=int(total or 0),
+                speed=float(event.get("speed") or 0),
+            )
+            info = event.get("info_dict") or {}
+            title = info.get("title")
+            if title:
+                update_job(job_id, title=title)
+        elif status == "finished":
+            update_job(job_id, speed=0)
+
+    outtmpl = str(dest.with_suffix("")) + ".%(ext)s"
+    opts = {
+        "format": format_selector(quality),
+        "merge_output_format": "mp4",
+        "final_ext": "mp4",
+        "outtmpl": outtmpl,
+        "progress_hooks": [hook],
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "windowsfilenames": True,
+        "restrictfilenames": False,
+        "overwrites": True,
+        "ffmpeg_location": ffmpeg_path(),
+        "retries": 3,
+        "fragment_retries": 3,
+        "ignoreerrors": False,
+    }
+
     try:
-        with urlopen(request, timeout=30) as response:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
             if cancel.is_set():
-                raise InterruptedError("cancelled")
-
-            content_type = response.headers.get("Content-Type", "")
-            total = int(response.headers.get("Content-Length") or 0)
-            hinted = filename_from_disposition(response.headers.get("Content-Disposition"))
-            if hinted:
-                dest = unique_path(DOWNLOAD_DIR, hinted)
-                part = dest.with_suffix(dest.suffix + ".part")
-                update_job(job_id, filename=dest.name, path=str(dest))
-
-            update_job(job_id, total=total)
-
-            received = 0
-            speed = 0.0
-            window_bytes = 0
-            window_start = time.monotonic()
-            peek = b""
-            checked = False
-
-            with open(part, "wb") as handle:
-                while True:
-                    if cancel.is_set():
-                        raise InterruptedError("cancelled")
-                    chunk = response.read(CHUNK)
-                    if not chunk:
-                        break
-                    if not checked:
-                        peek += chunk
-                        if len(peek) >= 64 or len(chunk) < CHUNK:
-                            if looks_like_html(content_type, peek):
-                                raise ValueError("That link is a web page, not an MP4 file.")
-                            if not is_video_type(content_type, url) and not looks_like_mp4(peek):
-                                raise ValueError("That file does not look like an MP4.")
-                            if len(peek) >= 8 and not looks_like_mp4(peek) and "video/" not in content_type.lower():
-                                raise ValueError("That file does not look like an MP4.")
-                            checked = True
-                    handle.write(chunk)
-                    received += len(chunk)
-                    window_bytes += len(chunk)
-                    elapsed = time.monotonic() - window_start
-                    if elapsed >= 0.4:
-                        speed = window_bytes / elapsed
-                        window_bytes = 0
-                        window_start = time.monotonic()
-                    update_job(job_id, received=received, total=total, speed=speed)
-
-            if received == 0:
-                raise ValueError("The server sent an empty file.")
-
-        part.replace(dest)
-        update_job(
-            job_id,
-            status="done",
-            received=received,
-            speed=0,
-            finished_at=time.time(),
-            path=str(dest),
-        )
-    except InterruptedError:
-        if part.exists():
-            part.unlink(missing_ok=True)
+                raise Cancelled("cancelled")
+            if not info:
+                raise ValueError("Could not read that YouTube video.")
+            if info.get("_type") == "playlist":
+                entries = [item for item in (info.get("entries") or []) if item]
+                if not entries:
+                    raise ValueError("That playlist has no videos.")
+                info = entries[0]
+            title = info.get("title") or dest.stem
+            prepared = Path(ydl.prepare_filename(info))
+            candidates = [prepared.with_suffix(".mp4"), prepared, dest, dest.with_suffix(".mp4")]
+            final = next((path for path in candidates if path.exists() and path.stat().st_size > 0), None)
+            if final is None:
+                matches = sorted(
+                    DOWNLOAD_DIR.glob(f"{dest.stem}.*"),
+                    key=lambda path: path.stat().st_mtime,
+                )
+                mp4s = [path for path in matches if path.suffix.lower() == ".mp4"]
+                final = mp4s[-1] if mp4s else None
+            if final is None or not final.exists():
+                raise ValueError("Download finished but no MP4 was written.")
+            size = final.stat().st_size
+            with JOBS_LOCK:
+                custom = bool(JOBS[job_id].get("custom_name"))
+            if not custom and title:
+                wanted = unique_path(DOWNLOAD_DIR, safe_filename(f"{title}.mp4"))
+                if wanted.resolve() != final.resolve():
+                    final.replace(wanted)
+                    final = wanted
+                    size = final.stat().st_size
+            update_job(
+                job_id,
+                status="done",
+                filename=final.name,
+                title=title,
+                path=str(final),
+                received=size,
+                total=size,
+                speed=0,
+                finished_at=time.time(),
+            )
+            cleanup_sidecars(final)
+    except Cancelled:
+        cleanup_sidecars(dest)
+        if dest.exists() and dest.stat().st_size == 0:
+            dest.unlink(missing_ok=True)
         update_job(job_id, status="cancelled", speed=0, finished_at=time.time())
-    except HTTPError as exc:
-        if part.exists():
-            part.unlink(missing_ok=True)
-        update_job(
-            job_id,
-            status="error",
-            error=f"Download failed ({exc.code}).",
-            speed=0,
-            finished_at=time.time(),
-        )
-    except (URLError, TimeoutError, ValueError, OSError) as exc:
-        if part.exists():
-            part.unlink(missing_ok=True)
+    except DownloadError as exc:
+        cleanup_sidecars(dest)
+        message = str(exc).strip() or "YouTube download failed."
+        message = re.sub(r"^ERROR:\s*", "", message)
+        if len(message) > 280:
+            message = message[:277] + "..."
+        update_job(job_id, status="error", error=message, speed=0, finished_at=time.time())
+    except Exception as exc:
+        cleanup_sidecars(dest)
         message = str(exc).strip() or "Download failed."
         update_job(job_id, status="error", error=message, speed=0, finished_at=time.time())
 
 
-def start_job(url: str, filename: str | None) -> dict[str, Any]:
+def start_job(url: str, filename: str | None, quality: str) -> dict[str, Any]:
     problem = validate_url(url)
     if problem:
         raise ValueError(problem)
+    if quality not in QUALITIES:
+        quality = "best"
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    name = safe_filename(filename) if filename else filename_from_url(url)
+    name = safe_filename(filename) if filename else "youtube-video.mp4"
     dest = unique_path(DOWNLOAD_DIR, name)
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
         "url": url,
         "filename": dest.name,
+        "title": dest.stem if filename else "Fetching video…",
+        "quality": quality,
         "status": "queued",
         "received": 0,
         "total": 0,
         "speed": 0.0,
         "error": "",
         "path": str(dest),
+        "custom_name": bool(filename),
         "started_at": None,
         "finished_at": None,
         "cancel": threading.Event(),
@@ -320,11 +377,12 @@ class Handler(SimpleHTTPRequestHandler):
             data = read_json(self)
             url = str(data.get("url") or "").strip()
             filename = str(data.get("filename") or "").strip() or None
+            quality = str(data.get("quality") or "best").strip().lower()
             if not url:
-                send_json(self, {"error": "Paste an MP4 URL first."}, 400)
+                send_json(self, {"error": "Paste a YouTube link first."}, 400)
                 return
             try:
-                job = start_job(url, filename)
+                job = start_job(url, filename, quality)
             except ValueError as exc:
                 send_json(self, {"error": str(exc)}, 400)
                 return
@@ -366,14 +424,16 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
+    ensure_deps()
+    ffmpeg_path()
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"MP4 Downloader  http://{HOST}:{PORT}/", flush=True)
+    print(f"YouTube to MP4  http://{HOST}:{PORT}/", flush=True)
     print(f"Saving files to {DOWNLOAD_DIR}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopped.", flush=True)
         server.server_close()
 
 
