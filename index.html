@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MP4 Downloader</title>
+  <meta name="description" content="Paste a direct MP4 link and save it to your Downloads folder." />
+  <meta name="theme-color" content="#1a1024" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,700&family=Outfit:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="wash" aria-hidden="true"></div>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <p class="eyebrow">Direct file saver</p>
+        <h1>MP4 Downloader</h1>
+      </div>
+      <button type="button" class="ghost" id="open-folder">Open folder</button>
+    </header>
+
+    <form class="card" id="form" autocomplete="off">
+      <label class="field">
+        <span>Video URL</span>
+        <input id="url" name="url" type="url" inputmode="url" spellcheck="false"
+          placeholder="https://example.com/clip.mp4" required />
+      </label>
+      <label class="field">
+        <span>Save as <em>(optional)</em></span>
+        <input id="filename" name="filename" type="text" spellcheck="false"
+          placeholder="my-video.mp4" maxlength="160" />
+      </label>
+      <p class="hint">Works with a direct <code>.mp4</code> link, not YouTube or streaming pages.</p>
+      <div class="actions">
+        <button type="submit" class="primary" id="download-btn">Download</button>
+        <p class="folder" id="folder-label">Saves to Downloads\MP4 Downloader</p>
+      </div>
+      <p class="banner" id="banner" hidden></p>
+    </form>
+
+    <section class="card list-card">
+      <div class="list-head">
+        <h2>Downloads</h2>
+        <span id="count-pill">None yet</span>
+      </div>
+      <ul id="jobs" class="jobs">
+        <li class="empty">Paste a link and hit download.</li>
+      </ul>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>
